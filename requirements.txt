@@ -1,0 +1,10 @@
+# what: the Python dependencies for Stage 0 of the lab-agent MVP.
+# why:  only Stage 0's needs are listed. Each later stage adds its own line, so
+#       the cost of every new technology stays visible in the diff instead of
+#       arriving as one unexplained wall of packages on day one.
+# how:  installed into .venv with `python -m pip install -r requirements.txt`.
+
+
+langgraph>=0.2          # the agent framework: nodes, edges, the router, the loop
+pydantic>=2.0           # validates the LLM's JSON at the model boundary
+pytest>=8.0             # the test runner; must stay offline and free forever
