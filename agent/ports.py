@@ -29,6 +29,22 @@ class MetricsPort(Protocol):
     Implemented by metrics_fake (Stage 0), metrics_docker (Stage 1) and
     metrics_prometheus (Stage 2). Returns a plain dict rather than a typed
     object so that a new source can add keys without breaking old callers.
+
+    THE CONTRACT. Every adapter must return at least these keys, because
+    agent/detectors.py reads them by name:
+
+        name                 str        the container
+        running              bool       is it up right now
+        restart_count        int        Docker's RestartCount
+        last_exit_code       int|None   None if it has never exited
+        oom_killed           bool       Docker's State.OOMKilled
+        memory_usage_bytes   int
+        memory_limit_bytes   int        0 when no limit is set
+
+    Write this down and mean it. In Stage 2 the Prometheus exporter will have to
+    publish last_exit_code and oom_killed as gauges purely because this contract
+    says so -- a source that cannot supply a field does not get to quietly drop
+    it, or the detectors silently weaken. That negotiation IS the ports lesson.
     """
 
     def container_stats(self, name: str) -> dict: ...
@@ -36,15 +52,22 @@ class MetricsPort(Protocol):
 
 @runtime_checkable
 class LLMPort(Protocol):
-    """Where the agent gets a proposed next step.
 
-    decide() returns RAW TEXT, not a parsed object, and that is deliberate: the
-    port must not pretend the model returned something valid. Parsing and
-    validation happen on our side of the boundary, in agent/models.py, where a
-    failure is catchable and retryable.
-    """
+
+   
 
     def decide(self, prompt: str) -> str: ...
+
+
+
+
+
+
+
+
+
+
+
 
 
 @runtime_checkable

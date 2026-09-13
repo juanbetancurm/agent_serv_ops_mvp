@@ -31,7 +31,9 @@ GOOD_RESPONSE = json.dumps(
 
 
 def test_well_formed_response_parses():
-    """The happy path: text in, validated object out."""
+    # Given:    a valid use_tool response, as raw JSON text
+    # Expected: an AgentDecision carrying the same tool and args
+    # Why:      the happy path of the model boundary -- text in, typed object out
     decision = AgentDecision.model_validate_json(GOOD_RESPONSE)
     assert decision.action == "use_tool"
     assert decision.tool == "get_container_stats"
@@ -39,19 +41,22 @@ def test_well_formed_response_parses():
 
 
 def test_confidence_above_one_is_rejected():
-    """The classic hallucinated number. ge/le on the field catches it."""
+    # Given:    a conclude response with confidence 1.7
+    # Expected: ValidationError (its message is printed, to be read)
+    # Why:      models invent numbers; Field(le=1.0) stops one before anything acts on it
     bad = json.dumps(
         {"action": "conclude", "diagnosis": "OOM", "confidence": 1.7, "reasoning": "sure"}
     )
     with pytest.raises(ValidationError) as err:
         AgentDecision.model_validate_json(bad)
-    # Printed so you can read the actual message pytest -s shows; in Stage 3
-    # this exact text is fed back to the model as an observation to retry from.
+    # In Stage 3 this exact text is fed back to the model as an observation.
     print("\nconfidence 1.7 rejected:\n", err.value)
 
 
 def test_invented_field_is_rejected():
-    """extra='forbid' turning a silent drop into a loud failure."""
+    # Given:    an otherwise valid response with an extra "priority" field
+    # Expected: ValidationError
+    # Why:      extra="forbid" -- a silently dropped field is a decision you think was made
     bad = json.dumps(
         {
             "action": "conclude",
@@ -66,14 +71,18 @@ def test_invented_field_is_rejected():
 
 
 def test_use_tool_without_a_tool_name_is_rejected():
-    """A cross-field rule: every field is individually fine, the whole is not."""
+    # Given:    action "use_tool" with no tool name
+    # Expected: ValidationError
+    # Why:      every field is fine alone; only the cross-field validator sees the whole is not
     bad = json.dumps({"action": "use_tool", "confidence": 0.5, "reasoning": "let me look"})
     with pytest.raises(ValidationError):
         AgentDecision.model_validate_json(bad)
 
 
 def test_incident_is_immutable():
-    """A finding is not a workspace: no node may edit the evidence after the fact."""
+    # Given:    an Incident
+    # Expected: changing its container raises
+    # Why:      frozen=True -- no node may edit a detector's finding after the fact
     incident = Incident(kind="RB-002", container="lab-victim", summary="OOM loop")
     with pytest.raises(Exception):  # dataclasses raise FrozenInstanceError
         incident.container = "postgres"  # type: ignore[misc]
@@ -92,14 +101,14 @@ class ThingWithoutStats:
 
 
 def test_a_port_is_satisfied_by_shape_not_by_inheritance():
-    """The ports-and-adapters lesson, as one assertion.
-
-    ThingWithStats never heard of MetricsPort. It satisfies it anyway, because
-    it has the method. This is why swapping the metrics source in Stage 2 is a
-    one-line change in run.py and nothing else.
-    """
+    # Given:    a class with container_stats that never imports or inherits MetricsPort
+    # Expected: isinstance(..., MetricsPort) is True
+    # Why:      structural typing -- the reason swapping the metrics source is one line in run.py
     assert isinstance(ThingWithStats(), MetricsPort)
 
 
 def test_missing_method_does_not_satisfy_the_port():
+    # Given:    a class without container_stats
+    # Expected: isinstance(..., MetricsPort) is False
+    # Why:      proves the check above is real, not something that always says yes
     assert not isinstance(ThingWithoutStats(), MetricsPort)

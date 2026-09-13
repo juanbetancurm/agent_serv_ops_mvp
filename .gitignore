@@ -3,3 +3,7 @@
 __pycache__/
 *.db
 audit.jsonl
+output.bash
+code.bash
+CLAUDE.md
+mvp_plan.md
