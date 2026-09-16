@@ -1,16 +1,19 @@
 """
-what: tests for the tool dispatcher, in its Stage 0 form.
-why:  these only prove the plumbing -- that a tool name reaches a function and an
-      observation comes back as text. They say nothing about SAFETY, because the
-      Stage 0 dispatcher has none. That silence is deliberate and temporary.
-      Stage 1 adds the two tests that matter to this file:
-          test_rejects_unknown_tool
-          test_rejects_write_on_non_lab_container
-      and writes them BEFORE the allowlist exists, so you watch them fail first.
-how:  call dispatch() directly with the args shape the model produces.
+what: tests for the tool dispatcher -- first the plumbing, then the safety
+      boundary.
+why:  the safety tests at the bottom are the safety story of the whole project.
+      They were written while the dispatcher was still unguarded and run red
+      against it first: a safety test you have never seen fail might be
+      asserting nothing at all.
+how:  call dispatch() directly with the args shape the model produces, and
+      assert either an observation string or a ToolNotAllowed refusal.
 """
 
-from agent.tools.registry import REGISTRY, dispatch
+import pytest
+
+from agent.tools.registry import REGISTRY, ToolNotAllowed, dispatch
+
+# ---- plumbing ----------------------------------------------------------------
 
 
 def test_the_three_tools_are_registered():
@@ -40,5 +43,56 @@ def test_dispatch_passes_optional_args_through():
 def test_the_fake_write_tool_changes_nothing():
     # Given:    restart_container on lab-victim
     # Expected: "nothing actually happened"
-    # Why:      Stage 0 writes are fake; the gate that makes real ones safe arrives in Stage 1
+    # Why:      Stage 0 writes are fake; this test changes when the real tools arrive
     assert "nothing actually happened" in dispatch("restart_container", {"name": "lab-victim"})
+
+
+# ---- the safety boundary ---------------------------------------------------------
+
+
+def test_rejects_unknown_tool():
+    # Given:    a tool that is not on the allowlist ("delete_volume")
+    # Expected: ToolNotAllowed -- a refusal, not a KeyError crash
+    # Why:      a model can ask for anything; only listed tools may ever run
+    with pytest.raises(ToolNotAllowed):
+        dispatch("delete_volume", {"name": "lab-victim"})
+
+
+def test_rejects_write_on_non_lab_container():
+    # Given:    restart_container aimed at "postgres"
+    # Expected: ToolNotAllowed
+    # Why:      THE safety boundary (rule 2) -- writes may only touch lab-* containers
+    with pytest.raises(ToolNotAllowed):
+        dispatch("restart_container", {"name": "postgres"})
+
+
+def test_rejects_write_on_names_that_only_look_like_lab():
+    # Given:    restart_container aimed at "postgres-lab-backup", then "LAB-victim"
+    # Expected: ToolNotAllowed for both
+    # Why:      the rule is "starts with lab-", exactly -- not "mentions lab" somewhere
+    for name in ("postgres-lab-backup", "LAB-victim"):
+        with pytest.raises(ToolNotAllowed):
+            dispatch("restart_container", {"name": name})
+
+
+def test_rejects_write_with_a_missing_or_non_text_name():
+    # Given:    restart_container with no name at all, then with the number 123
+    # Expected: ToolNotAllowed for both
+    # Why:      a gate that crashes on odd input is not a gate -- and models send odd input
+    for args in ({}, {"name": 123}):
+        with pytest.raises(ToolNotAllowed):
+            dispatch("restart_container", args)
+
+
+def test_allows_write_on_a_lab_container():
+    # Given:    restart_container aimed at "lab-victim"
+    # Expected: an observation, no refusal
+    # Why:      a gate that refuses everything is as broken as one that refuses nothing
+    assert "restarted lab-victim" in dispatch("restart_container", {"name": "lab-victim"})
+
+
+def test_read_tools_are_not_limited_to_lab_containers():
+    # Given:    get_container_stats aimed at "postgres"
+    # Expected: an observation, no refusal
+    # Why:      looking is safe; only WRITES carry the lab-* restriction
+    assert "postgres" in dispatch("get_container_stats", {"name": "postgres"})

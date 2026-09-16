@@ -31,6 +31,16 @@ REGISTRY: dict[str, Callable[..., str]] = {
 }
 
 
+class ToolNotAllowed(Exception):
+    """A tool call the dispatcher refuses: a tool that is not on the allowlist,
+    or a write aimed at a container outside lab-*.
+
+    A refusal, not a crash. The graph catches it and hands the message to the
+    model as an observation -- the same idea as `{"ok": False, "error": ...}`
+    in 01_practice's run_tool.
+    """
+
+
 def dispatch(tool: str, args: dict) -> str:
     """Run the named tool with the model's arguments and return its observation.
 
