@@ -38,15 +38,15 @@ from agent.detectors import detect
 from agent.models import AgentDecision
 from agent.ports import DocsPort, LLMPort, MemoryPort, MetricsPort
 from agent.state import AgentState
-from agent.tools.registry import REGISTRY, dispatch
+from agent.tools.registry import REGISTRY, ToolNotAllowed, dispatch
 
 # The hard bound on tool calls per run. 01_practice had the same idea as
 # `if step > MAX_STEPS: break`; here it is a condition on an edge, checked in
 # Python on every pass. LangGraph has its own recursion_limit too, but it is a
-# last-resort crash set far too high to protect a budget: on the installed
-# release, a runaway loop with no bound made over 5,000 model calls before it
-# fired. That limit is the framework's; this one is ours, tested, and ends the
-# run cleanly with a record of what happened.
+# last-resort crash set far too high to protect a budget: measured on the
+# installed release, a runaway loop with no bound made 5,003 model calls before
+# it fired. That limit is the framework's; this one is ours, tested, and ends
+# the run cleanly with a record of what happened.
 MAX_STEPS = 5
 
 
@@ -158,10 +158,18 @@ def build_graph(metrics: MetricsPort, llm: LLMPort, docs: DocsPort, memory: Memo
 
     def act_node(state: AgentState) -> dict:
         decision = state["decision"]
-        observation = dispatch(decision.tool, decision.args)
+        try:
+            observation = dispatch(decision.tool, decision.args)
+        except ToolNotAllowed as refusal:
+            # A refusal is not a crash. The message becomes an observation, so
+            # the model reads WHY it was refused and can propose something else.
+            # 01_practice had the same instinct: run_tool RETURNED
+            # {"ok": False, "error": ...} rather than raising into the loop.
+            observation = f"REFUSED: {refusal}"
         return {
-            # Incremented HERE, where a tool actually runs, so `steps` counts
-            # tool calls made rather than thoughts had.
+            # Incremented even when the call was refused, on purpose: a model
+            # that keeps asking for a forbidden tool must still run out of
+            # steps, or one refusal becomes an infinite loop.
             "steps": state["steps"] + 1,
             # The observation goes into history, and history goes into the next
             # prompt. That is the whole feedback loop, in one line.

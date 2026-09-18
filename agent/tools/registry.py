@@ -3,14 +3,15 @@ what: the single function through which every tool call in the agent passes.
 why:  one choke point means one place to enforce policy. The graph never calls a
       tool directly -- it calls dispatch(), and dispatch() decides what runs.
 
-      !!! UNGUARDED ON PURPOSE IN STAGE 0 !!!
-      Right now this dispatcher does whatever the model asks. It would run
-      restart_container(name="postgres") without hesitation. That is harmless
-      today ONLY because every tool is fake. Stage 1 begins by writing the test
-      `restart_container(name="postgres")` must raise ToolNotAllowed, watching
-      it FAIL against this exact file, and then adding the allowlist here.
-      Nothing in graph.py will change when that happens -- which is the reason
-      the lookup lives in this file and not inside the graph.
+      This is the safety boundary of the whole project. The model may ask for
+      anything; ALLOWED decides what is permitted -- in Python, not in prose. A
+      tool named in a prompt is granted nothing; only this table grants.
+
+      Rule 2 lives here: writes may only target lab-* containers. The tests for
+      it -- restart_container(name="postgres"), names that merely look like
+      lab-*, and a name that is not even a string -- were written and watched
+      FAIL against the unguarded version of this file before these checks
+      existed. A safety test that has never failed may be asserting nothing.
 
 how:  REGISTRY maps a tool name to a function, and dispatch() calls it with the
       model's args. The gate is deliberately NOT injected into the graph as a
@@ -23,6 +24,17 @@ from collections.abc import Callable
 
 # Stage 1 changes this ONE import to `from agent.tools import container`.
 from agent.tools import container_fake as container
+
+# The POLICY table: which tools may run, and under what conditions. Separate
+# from REGISTRY, which only says HOW to run them. Two tables, two jobs -- and
+# adding a function to REGISTRY grants nothing until a policy appears here, so a
+# tool someone forgets to list is refused rather than quietly permitted.
+ALLOWED: dict[str, dict] = {
+    "get_container_stats": {"write": False},
+    "get_container_logs": {"write": False},
+    # The only write in the project, and the only entry with a target rule.
+    "restart_container": {"write": True, "name_prefix": "lab-"},
+}
 
 REGISTRY: dict[str, Callable[..., str]] = {
     "get_container_stats": container.get_container_stats,
@@ -42,11 +54,34 @@ class ToolNotAllowed(Exception):
 
 
 def dispatch(tool: str, args: dict) -> str:
-    """Run the named tool with the model's arguments and return its observation.
+    """Run the named tool, if policy allows it, and return its observation.
 
-    An unknown tool currently raises KeyError and would crash the run. MockLLM
-    never asks for one, so Stage 0 never sees it. Stage 1 turns that into
-    ToolNotAllowed, and the graph turns ToolNotAllowed into an observation the
-    model can read -- a refusal, not a crash.
+    Two checks run before any tool code does:
+      1. is this tool on the allowlist at all?
+      2. if it writes, does its target start with the required prefix?
+
+    That order matters for more than tidiness. Because both checks come before
+    REGISTRY[tool](**args), a refused call never executes tool code -- so these
+    refusals stay free and offline even in Stage 5, when restart_container
+    really restarts a container.
     """
+    spec = ALLOWED.get(tool)
+    if spec is None:
+        # Fail closed. Anything not named in ALLOWED is refused, including a
+        # function that exists in REGISTRY. A model asking for a tool that does
+        # not exist is not a bug in the model; it is the reason for this line.
+        raise ToolNotAllowed(f"{tool} is not in the allowlist")
+
+    prefix = spec.get("name_prefix")
+    if prefix is not None:
+        name = args.get("name")
+        # isinstance FIRST: {"name": 123} must be refused, not crash the run on
+        # AttributeError. A gate that breaks on odd input is not a gate, and odd
+        # input is exactly what a language model eventually produces.
+        if not isinstance(name, str) or not name.startswith(prefix):
+            raise ToolNotAllowed(f"{tool} may only target {prefix}* containers, not {name!r}")
+
+    # Per-ARGUMENT validation (types, required fields) is deliberately absent:
+    # that was validate_arguments() in 01_practice, and it answers a different
+    # question from authorisation. This file answers: which tools, which targets.
     return REGISTRY[tool](**args)

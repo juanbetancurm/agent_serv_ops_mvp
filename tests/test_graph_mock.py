@@ -10,6 +10,8 @@ how:  run() builds a graph from fresh adapters and invokes it once. Each test
       the history lines -- whose first word names the node that wrote them.
 """
 
+import json
+
 from agent.adapters.docs_null import NullDocs
 from agent.adapters.llm_mock import DEFAULT_SCRIPT, MockLLM
 from agent.adapters.memory_null import NullMemory
@@ -105,3 +107,28 @@ def test_the_run_is_recorded_in_memory():
     assert len(recorded) == 1
     assert recorded[0]["container"] == "lab-victim"
     assert recorded[0]["diagnosis"] == final["decision"].diagnosis
+
+
+# The same forbidden request the refusal demo in code.bash uses, so the demo and
+# the test can never drift apart.
+FORBIDDEN_REQUEST = json.dumps(
+    {
+        "action": "use_tool",
+        "tool": "restart_container",
+        "args": {"name": "postgres"},
+        "confidence": 0.7,
+        "reasoning": "Restarting the database will clear the memory pressure.",
+    }
+)
+
+
+def test_a_refused_tool_becomes_an_observation_not_a_crash():
+    # Given:    a model that asks to restart "postgres", then concludes
+    # Expected: the run finishes, the trace holds a REFUSED line, the model sees it
+    # Why:      rule 2 blocks the action, and the model is told why instead of the run dying
+    scripted = MockLLM([FORBIDDEN_REQUEST, DEFAULT_SCRIPT[1]])
+    final, llm, _ = run(llm=scripted)
+    assert any(line.startswith("ACT") and "REFUSED" in line for line in final["history"])
+    assert "REFUSED" in llm.prompts[1]
+    assert final["decision"].action == "conclude"
+    assert final["steps"] == 1  # a refused call still costs a step
