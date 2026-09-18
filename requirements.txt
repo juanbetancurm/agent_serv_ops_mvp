@@ -8,3 +8,4 @@
 langgraph>=0.2          # the agent framework: nodes, edges, the router, the loop
 pydantic>=2.0           # validates the LLM's JSON at the model boundary
 pytest>=8.0             # the test runner; must stay offline and free forever
+docker>=7.1             # the Docker Engine SDK: Stage 1 reads containers through it

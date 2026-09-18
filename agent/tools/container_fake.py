@@ -1,9 +1,9 @@
 """
-what: fake versions of the three tools the agent may call -- two reads, one write.
-why:  the graph needs something to execute when the model asks for a tool, and
-      in Stage 0 nothing may touch Docker. Stage 1 replaces this file with
-      container.py, which calls the real Docker SDK, by changing a single import
-      in registry.py.
+what: fake versions of the three tools -- two reads, one write.
+why:  these were the Stage 0 stand-ins, and from Stage 1 they have a permanent
+      job: they are the TEST DOUBLE for the real tools in container.py.
+      tests/conftest.py swaps them into REGISTRY for every test, which is what
+      keeps `pytest` from reading real containers and restarting them.
 how:  plain functions that return an observation STRING. A string, because an
       observation is written into the history and pasted back into the next
       prompt -- the model reads text, so a tool's output is text.

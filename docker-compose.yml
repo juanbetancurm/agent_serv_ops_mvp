@@ -1,0 +1,31 @@
+# what: the one container this MVP watches -- a container that deliberately
+#       leaks memory until the kernel kills it, then comes straight back.
+# why:  Stage 1 needs a REAL incident to read with real Docker calls. RB-002's
+#       reproduction recipe produces one in about 13 seconds, every time, with a
+#       blast radius of 128 MiB.
+# how:  a 128 MiB limit plus a script that allocates 10 MB every second. At
+#       ~13 s the container passes its limit, the kernel OOM-kills it inside its
+#       own cgroup, and `restart: unless-stopped` starts it again. That restart
+#       policy is what turns one kill into a LOOP.
+#
+#       mem_limit is MANDATORY (RB-002). Without it the kill is not contained:
+#       Docker Desktop runs every container inside one shared Linux VM, and that
+#       VM's kernel would pick the largest process it could find -- possibly
+#       another container, possibly dockerd itself.
+
+services:
+  lab-victim:
+    image: python:3.12-alpine
+    container_name: lab-victim   # fixed name: the allowlist in registry.py matches lab-*
+    mem_limit: 128m              # MANDATORY - see above
+    restart: unless-stopped      # what turns one OOM kill into a restart loop
+    command:
+      - python
+      - -u                       # unbuffered, so anything printed appears immediately
+      - -c
+      - |
+        import time
+        buf = []
+        while True:
+            buf.append(bytearray(10 * 1024 * 1024))
+            time.sleep(1)

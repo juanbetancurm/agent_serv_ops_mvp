@@ -22,8 +22,9 @@ how:  REGISTRY maps a tool name to a function, and dispatch() calls it with the
 
 from collections.abc import Callable
 
-# Stage 1 changes this ONE import to `from agent.tools import container`.
-from agent.tools import container_fake as container
+# The one line Stage 1 changed. The fakes are not deleted: tests/conftest.py
+# swaps them back in for every test, so pytest never touches Docker (rule 5).
+from agent.tools import container
 
 # The POLICY table: which tools may run, and under what conditions. Separate
 # from REGISTRY, which only says HOW to run them. Two tables, two jobs -- and
