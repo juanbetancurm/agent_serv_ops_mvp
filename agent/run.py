@@ -22,7 +22,7 @@ import time
 from agent.adapters.docs_null import NullDocs
 from agent.adapters.llm_mock import MockLLM
 from agent.adapters.memory_null import NullMemory
-from agent.adapters.metrics_docker import DockerMetrics
+from agent.adapters.metrics_prometheus import PrometheusMetrics
 from agent.graph import MAX_STEPS, build_graph, initial_state
 
 CONTAINER = "lab-victim"
@@ -30,10 +30,11 @@ CONTAINER = "lab-victim"
 
 def main() -> None:
     # ---- the four adapter choices: the only lines later stages edit ---------
-    # THE STAGE 1 SWAP, and it is this one line. Everything behind it changed --
-    # the numbers now come from a real daemon, read partly from its event log --
-    # and nothing in graph.py, detectors.py or any test noticed.
-    metrics = DockerMetrics()  # was FakeMetrics()   Stage 2: metrics_prometheus.py
+    # THE STAGE 2 SWAP, and it is this one line again. FakeMetrics ->
+    # DockerMetrics -> PrometheusMetrics: three sources, three technologies, a
+    # scrape loop and a time-series database now in the path -- and graph.py,
+    # detectors.py and every test have still never been touched.
+    metrics = PrometheusMetrics()  # was DockerMetrics(), before that FakeMetrics()
     llm = MockLLM()  # Stage 3: llm_openai.py
     docs = NullDocs()  # Stage 4: docs_tfidf.py
     memory = NullMemory()  # Stage 4: memory_sqlite.py

@@ -1,0 +1,20 @@
+# what: the scrape configuration -- who Prometheus asks, and how often.
+# why:  Prometheus PULLS. Nothing is ever pushed to it; it fetches /metrics on a
+#       timer and stores each sample with a timestamp. This file is the entire
+#       list of things it knows about, which is why "it is not in Prometheus"
+#       almost always means "nobody told it to scrape that".
+# how:  one job, one target: our exporter, running on the Windows host outside
+#       Docker. From inside a container the host is host.docker.internal.
+
+global:
+  # Matches the exporter's 5 s publish loop. Scraping faster would just store
+  # the same number again; scraping slower would age the agent's evidence.
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: lab-exporter
+    static_configs:
+      # host.docker.internal is the machine running Docker, as seen from inside
+      # a container. Docker Desktop provides it automatically; on a plain Linux
+      # host the extra_hosts line in docker-compose.yml is what creates it.
+      - targets: ["host.docker.internal:9101"]

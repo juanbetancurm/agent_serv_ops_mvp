@@ -29,3 +29,22 @@ services:
         while True:
             buf.append(bytearray(10 * 1024 * 1024))
             time.sleep(1)
+
+  prometheus:
+    image: prom/prometheus:v3.5.0   # pinned: "latest" turns a working demo into a surprise
+    # NOT named lab-anything, on purpose. The agent's allowlist permits writes on
+    # lab-* containers, so any container with that prefix is inside its blast
+    # radius. The monitoring must not be: an agent that can restart its own
+    # metrics source can blind itself. RB-002 makes the same point about dockerd.
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"               # the web UI and the HTTP API, on the host
+    volumes:
+      # :ro - Prometheus only ever reads this file, so it is mounted read-only.
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      # Docker Desktop already resolves host.docker.internal; this line is what
+      # makes the same compose file work on a plain Linux host, like the VPS.
+      - "host.docker.internal:host-gateway"
