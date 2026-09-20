@@ -132,3 +132,87 @@ def test_a_refused_tool_becomes_an_observation_not_a_crash():
     assert "REFUSED" in llm.prompts[1]
     assert final["decision"].action == "conclude"
     assert final["steps"] == 1  # a refused call still costs a step
+
+
+# Two replies a real model genuinely produces, and Pydantic must refuse both:
+# prose wrapped around the JSON, and a decision with a required field missing.
+PROSE_AROUND_JSON = (
+    "Sure! Here is my decision: "
+    '{"action": "conclude", "diagnosis": "OOM", "confidence": 0.9, "reasoning": "RB-002"}'
+)
+MISSING_REASONING = json.dumps(
+    {"action": "conclude", "diagnosis": "OOM restart loop", "confidence": 0.9}
+)
+
+
+def test_a_malformed_reply_is_retried_not_crashed():
+    # Given:    a model that answers with prose around its JSON, then correctly
+    # Expected: the run survives, an INVALID line appears, and it still concludes
+    # Why:      a real model will do this; crashing on it would end the investigation
+    scripted = MockLLM([PROSE_AROUND_JSON, DEFAULT_SCRIPT[1]])
+    final, llm, _ = run(llm=scripted)
+    assert any(line.startswith("INVALID") for line in final["history"])
+    assert final["decision"].action == "conclude"
+    assert llm.calls == 2
+    assert final["steps"] == 1  # the rejected reply cost a step
+
+
+def test_the_validation_error_reaches_the_next_prompt():
+    # Given:    a reply missing the required "reasoning" field
+    # Expected: the next prompt names that field
+    # Why:      the model can only correct a mistake it is told about
+    scripted = MockLLM([MISSING_REASONING, DEFAULT_SCRIPT[1]])
+    _, llm, _ = run(llm=scripted)
+    assert "INVALID" in llm.prompts[1]
+    assert "reasoning" in llm.prompts[1]
+
+
+def test_a_model_that_never_validates_is_stopped_by_the_bound():
+    # Given:    a model whose every reply is malformed
+    # Expected: exactly MAX_STEPS attempts, then a RECORD line, no exception
+    # Why:      rule 3 again -- retrying must be bounded by the same counter as acting
+    scripted = MockLLM([MISSING_REASONING])
+    final, llm, _ = run(llm=scripted)
+    assert final["steps"] == MAX_STEPS
+    assert llm.calls == MAX_STEPS
+    assert final["history"][-1].startswith("RECORD")
+    assert final["decision"] is None
+
+
+def test_the_prompt_lists_each_tool_with_its_parameters():
+    # Given:    a normal run
+    # Expected: the first prompt shows names AND parameters, e.g. lines=50
+    # Why:      a real model invented argument names when it was given names alone
+    _, llm, _ = run()
+    assert "get_container_logs(name" in llm.prompts[0]
+    assert "lines" in llm.prompts[0]
+
+
+def test_a_tool_call_with_wrong_argument_names_is_refused_not_crashed():
+    # Given:    a model that calls get_container_logs(container=, tail=), then concludes
+    # Expected: a REFUSED observation naming the real parameters, and a conclusion
+    # Why:      this exact call came from a real model; it must cost a step, not the run
+    wrong_args = json.dumps(
+        {
+            "action": "use_tool",
+            "tool": "get_container_logs",
+            "args": {"container": "lab-victim", "tail": 200},
+            "confidence": 0.65,
+            "reasoning": "Logs may show what allocates before the kill.",
+        }
+    )
+    final, llm, _ = run(llm=MockLLM([wrong_args, DEFAULT_SCRIPT[1]]))
+    refusals = [line for line in final["history"] if line.startswith("ACT") and "REFUSED" in line]
+    assert refusals and "name" in refusals[0]
+    assert final["decision"].action == "conclude"
+
+
+def test_a_run_with_no_valid_decision_is_still_recorded():
+    # Given:    the same never-valid model
+    # Expected: one memory row, with no diagnosis
+    # Why:      "we failed to reach a conclusion" is itself a fact worth keeping
+    _, _, memory = run(llm=MockLLM([MISSING_REASONING]))
+    recorded = memory.recent_incidents("RB-002", hours=24)
+    assert len(recorded) == 1
+    assert recorded[0]["diagnosis"] is None
+

@@ -19,8 +19,10 @@ how:  build four adapters, hand them to build_graph(), invoke once on
 
 import time
 
+from dotenv import load_dotenv
+
 from agent.adapters.docs_null import NullDocs
-from agent.adapters.llm_mock import MockLLM
+from agent.adapters.llm_openai import OpenAIAdapter
 from agent.adapters.memory_null import NullMemory
 from agent.adapters.metrics_prometheus import PrometheusMetrics
 from agent.graph import MAX_STEPS, build_graph, initial_state
@@ -29,13 +31,22 @@ CONTAINER = "lab-victim"
 
 
 def main() -> None:
+    # Load .env before any adapter is built, because an adapter reads its
+    # configuration from the environment at construction. The composition root
+    # is the right place for this: an adapter that quietly loaded a file would
+    # behave differently depending on where it was imported from.
+    load_dotenv()
+
     # ---- the four adapter choices: the only lines later stages edit ---------
     # THE STAGE 2 SWAP, and it is this one line again. FakeMetrics ->
     # DockerMetrics -> PrometheusMetrics: three sources, three technologies, a
     # scrape loop and a time-series database now in the path -- and graph.py,
     # detectors.py and every test have still never been touched.
     metrics = PrometheusMetrics()  # was DockerMetrics(), before that FakeMetrics()
-    llm = MockLLM()  # Stage 3: llm_openai.py
+    # THE STAGE 3 SWAP: the line that starts costing money. MockLLM is not gone
+    # -- it is still the default in every test (rule 5), which is what keeps
+    # `pytest` free while this file spends.
+    llm = OpenAIAdapter()  # was MockLLM()
     docs = NullDocs()  # Stage 4: docs_tfidf.py
     memory = NullMemory()  # Stage 4: memory_sqlite.py
 
@@ -64,7 +75,13 @@ def main() -> None:
         print(f"VERDICT  {decision.diagnosis} (confidence {decision.confidence})")
     else:
         print(f"VERDICT  no conclusion -- the step bound ended the run after {MAX_STEPS} tool calls")
-    print(f"         {final['steps']} tool call(s) | {model_calls} model call(s) | {elapsed_ms:.0f} ms")
+    # getattr, because only the real adapter counts tokens; MockLLM has none and
+    # this file must keep working with either.
+    tokens = getattr(llm, "tokens", 0)
+    print(
+        f"         {final['steps']} tool call(s) | {model_calls} model call(s) | "
+        f"{tokens} tokens | {elapsed_ms:.0f} ms"
+    )
 
 
 if __name__ == "__main__":

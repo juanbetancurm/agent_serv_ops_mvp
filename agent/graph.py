@@ -22,17 +22,20 @@ how:  build_graph() receives the four adapters as arguments and the nodes close
           recall
             |
           reason <---------+
-            |              |
-         route()           |
-          |    |           |
-          |    +--> act ---+     use_tool AND steps < MAX_STEPS
+            |   ^          |
+         route()|          |
+          |  |  +----------+     reply did not validate: ask again
+          |  |             |
+          |  +--> act -----+     use_tool AND steps < MAX_STEPS
           |
           +--> record --> END    conclude, OR the step bound was hit
 """
 
+import inspect
 import json
 
 from langgraph.graph import END, START, StateGraph
+from pydantic import ValidationError
 
 from agent.detectors import detect
 from agent.models import AgentDecision
@@ -85,12 +88,30 @@ def build_prompt(state: AgentState) -> str:
         # The prompt DESCRIBES the tools; registry.py ENFORCES them. Listing a
         # tool here grants nothing -- the same lesson as ALLOWED_TOOLS in
         # 01_practice/llm_reasoner.py.
-        f"Tools you may request: {', '.join(sorted(REGISTRY))}\n"
+        f"Tools you may request, with their exact parameters:\n{tool_catalogue()}\n"
         # Informational only. route() enforces the bound whatever the model
         # makes of this line.
         f"Tool calls used: {state['steps']} of {MAX_STEPS}\n\n"
         "Investigation so far:\n" + "\n".join(state["history"]) + "\n"
     )
+
+
+def tool_catalogue() -> str:
+    """One line per tool, with its real signature.
+
+    Read straight from the functions, so the catalogue cannot drift from the
+    code. Measured need: given only the NAMES, a real model asked for
+    get_container_logs(container=..., tail=...) when the signature is
+    (name, lines=50).
+
+    This is information, not permission. registry.py still refuses anything that
+    does not fit, whatever the model read here.
+    """
+    lines = []
+    for name in sorted(REGISTRY):
+        parameters = inspect.signature(REGISTRY[name]).parameters.values()
+        lines.append(f"- {name}({', '.join(str(p) for p in parameters)})")
+    return "\n".join(lines)
 
 
 def route_after_detect(state: AgentState) -> str:
@@ -105,7 +126,15 @@ def route(state: AgentState) -> str:
     prompt -- it is simply never routed to `act` again.
     """
     decision = state["decision"]
-    if decision.action == "use_tool" and state["steps"] < MAX_STEPS:
+    # The bound first, so every path out of reason is capped by the same number:
+    # tool calls, retries after an invalid reply, or any mix of the two.
+    if state["steps"] >= MAX_STEPS:
+        return "record"
+    if decision is None:
+        # The last reply did not validate. Ask again -- the error is now in the
+        # history, so the next prompt carries it.
+        return "reason"
+    if decision.action == "use_tool":
         return "act"
     return "record"
 
@@ -145,7 +174,26 @@ def build_graph(metrics: MetricsPort, llm: LLMPort, docs: DocsPort, memory: Memo
         # exception would crash the run, which is acceptable only because MockLLM
         # never sends bad JSON. Stage 3 catches ValidationError here and feeds the
         # message back as an observation, bounded by the same step counter.
-        decision = AgentDecision.model_validate_json(raw)
+        try:
+            decision = AgentDecision.model_validate_json(raw)
+        except ValidationError as error:
+            # The model wrote something we cannot act on: prose around the JSON,
+            # a missing field, a confidence of 1.7. Do not crash, and do not
+            # guess what it meant. Hand the error back as an observation -- it
+            # goes into history, and history goes into the next prompt -- and
+            # charge it a step, so "let me try again" cannot loop forever.
+            # Exactly the shape of a refused tool call, one layer up.
+            problems = "; ".join(
+                f"{'.'.join(str(part) for part in item['loc']) or 'response'}: {item['msg']}"
+                for item in error.errors()[:3]  # three is plenty to correct from
+            )
+            return {
+                "decision": None,
+                "steps": state["steps"] + 1,
+                "history": [
+                    f"INVALID  [{state['steps']}/{MAX_STEPS}] the reply did not validate -> {problems}"
+                ],
+            }
         if decision.action == "use_tool":
             what = f"use_tool {decision.tool} {decision.args}"
         else:
@@ -179,7 +227,8 @@ def build_graph(metrics: MetricsPort, llm: LLMPort, docs: DocsPort, memory: Memo
     def record_node(state: AgentState) -> dict:
         incident = state["incident"]
         decision = state["decision"]
-        concluded = decision.action == "conclude"
+        # decision is None when every reply was malformed until the bound hit.
+        concluded = decision is not None and decision.action == "conclude"
         # No timestamp here: the graph stays off the clock, and the Stage 4
         # SQLite adapter stamps the time when it stores the row.
         memory.record(
@@ -189,14 +238,16 @@ def build_graph(metrics: MetricsPort, llm: LLMPort, docs: DocsPort, memory: Memo
                 # None when the bound stopped the run: an honest "no conclusion"
                 # beats recording a diagnosis the model never gave.
                 "diagnosis": decision.diagnosis if concluded else None,
-                "confidence": decision.confidence,
+                "confidence": decision.confidence if decision is not None else None,
                 "action_taken": None,  # nothing gated has run yet; Stage 5 fills this
             }
         )
         if concluded:
             outcome = "concluded"
+        elif decision is None:
+            outcome = f"STOPPED after {MAX_STEPS} attempts: no reply ever validated"
         else:
-            outcome = f"STOPPED by step bound after {MAX_STEPS} tool calls, no conclusion"
+            outcome = f"STOPPED by step bound after {MAX_STEPS} steps, no conclusion"
         return {"history": [f"RECORD   {outcome} | saved to episodic memory"]}
 
     builder = StateGraph(AgentState)
@@ -209,7 +260,12 @@ def build_graph(metrics: MetricsPort, llm: LLMPort, docs: DocsPort, memory: Memo
     builder.add_edge(START, "detect")
     builder.add_conditional_edges("detect", route_after_detect, {"recall": "recall", "end": END})
     builder.add_edge("recall", "reason")
-    builder.add_conditional_edges("reason", route, {"act": "act", "record": "record"})
+    builder.add_conditional_edges(
+        # "reason" maps to itself: that is the retry after a malformed reply.
+        "reason",
+        route,
+        {"act": "act", "record": "record", "reason": "reason"},
+    )
     builder.add_edge("act", "reason")  # the loop: 01's `continue`, as an edge
     builder.add_edge("record", END)
 

@@ -11,3 +11,4 @@ pytest>=8.0             # the test runner; must stay offline and free forever
 docker>=7.1             # the Docker Engine SDK: Stage 1 reads containers through it
 prometheus-client>=0.20  # Stage 2: the exporter's Gauge and HTTP server
 httpx>=0.27             # Stage 2: the HTTP client the Prometheus adapter queries with
+python-dotenv>=1.0      # Stage 3: loads .env so keys never live in source

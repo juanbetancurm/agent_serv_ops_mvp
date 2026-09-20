@@ -43,8 +43,9 @@ class AgentState(TypedDict):
     # is the human-readable trace that run.py prints at the end.
     history: Annotated[list[str], operator.add]
 
-    # NOT annotated, so it is overwritten. act_node returns steps + 1 and the
-    # router compares it against MAX_STEPS. This counter lives in state and is
+    # NOT annotated, so it is overwritten. Both act_node and reason_node return
+    # steps + 1 -- it counts every attempt that could repeat, a tool call or a
+    # reply that failed validation -- and the router compares it to MAX_STEPS. This counter lives in state and is
     # checked in Python -- it is the hard bound on the reasoning loop, and no
     # prompt wording can talk its way past it.
     steps: int

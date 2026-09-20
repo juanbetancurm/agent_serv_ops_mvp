@@ -11,7 +11,7 @@ how:  call dispatch() directly with the args shape the model produces, and
 
 import pytest
 
-from agent.tools.registry import REGISTRY, ToolNotAllowed, dispatch
+from agent.tools.registry import REGISTRY, ToolCallInvalid, ToolNotAllowed, dispatch
 
 # ---- plumbing ----------------------------------------------------------------
 
@@ -89,6 +89,31 @@ def test_allows_write_on_a_lab_container():
     # Expected: an observation, no refusal
     # Why:      a gate that refuses everything is as broken as one that refuses nothing
     assert "restarted lab-victim" in dispatch("restart_container", {"name": "lab-victim"})
+
+
+def test_rejects_a_call_whose_argument_names_do_not_fit():
+    # Given:    get_container_logs(container=..., tail=...) -- what a real model
+    #           actually asked for on its first call; the signature is (name, lines)
+    # Expected: ToolCallInvalid, before the function is called
+    # Why:      otherwise Python raises TypeError and the whole investigation dies
+    with pytest.raises(ToolCallInvalid):
+        dispatch("get_container_logs", {"container": "lab-victim", "tail": 200})
+
+
+def test_rejects_a_call_missing_a_required_argument():
+    # Given:    get_container_stats with no name at all
+    # Expected: ToolCallInvalid
+    # Why:      same reason: a refusal the model can read beats a crash it cannot
+    with pytest.raises(ToolCallInvalid):
+        dispatch("get_container_stats", {})
+
+
+def test_an_invalid_call_is_still_a_tool_not_allowed():
+    # Given:    a call with wrong argument names
+    # Expected: it is also caught by `except ToolNotAllowed`
+    # Why:      act_node catches the parent class; the subclass only sharpens the message
+    with pytest.raises(ToolNotAllowed):
+        dispatch("get_container_logs", {"container": "lab-victim"})
 
 
 def test_read_tools_are_not_limited_to_lab_containers():

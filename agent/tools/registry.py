@@ -20,6 +20,7 @@ how:  REGISTRY maps a tool name to a function, and dispatch() calls it with the
       permissive one is not a safety boundary.
 """
 
+import inspect
 from collections.abc import Callable
 
 # The one line Stage 1 changed. The fakes are not deleted: tests/conftest.py
@@ -54,6 +55,22 @@ class ToolNotAllowed(Exception):
     """
 
 
+class ToolCallInvalid(ToolNotAllowed):
+    """The tool is permitted, but the arguments do not fit its signature.
+
+    A subclass, so everything that catches ToolNotAllowed -- act_node, the
+    tests -- keeps working, while the name still tells the truth: this is a
+    malformed call, not a forbidden one.
+
+    It exists because a real model produced, on its first call ever:
+        get_container_logs(container="lab-victim", tail=200)
+    for a tool whose signature is (name, lines=50). Pydantic accepted that --
+    `args` is a free dict -- and the allowlist accepted it too, because the tool
+    IS permitted. Without this check the call reached Python and died with a
+    TypeError, which kills the run instead of teaching the model anything.
+    """
+
+
 def dispatch(tool: str, args: dict) -> str:
     """Run the named tool, if policy allows it, and return its observation.
 
@@ -82,7 +99,16 @@ def dispatch(tool: str, args: dict) -> str:
         if not isinstance(name, str) or not name.startswith(prefix):
             raise ToolNotAllowed(f"{tool} may only target {prefix}* containers, not {name!r}")
 
-    # Per-ARGUMENT validation (types, required fields) is deliberately absent:
-    # that was validate_arguments() in 01_practice, and it answers a different
-    # question from authorisation. This file answers: which tools, which targets.
-    return REGISTRY[tool](**args)
+    function = REGISTRY[tool]
+    # Per-ARGUMENT validation, the job 01_practice gave validate_arguments().
+    # signature().bind() answers "could this function be called with exactly
+    # these arguments?" without calling it -- so a wrong name or a missing
+    # required argument becomes a refusal the model can read and correct,
+    # instead of a TypeError that ends the investigation.
+    try:
+        inspect.signature(function).bind(**args)
+    except TypeError as mismatch:
+        accepted = ", ".join(inspect.signature(function).parameters)
+        raise ToolCallInvalid(f"{tool} takes ({accepted}) -- {mismatch}") from mismatch
+
+    return function(**args)
