@@ -21,9 +21,9 @@ import time
 
 from dotenv import load_dotenv
 
-from agent.adapters.docs_null import NullDocs
+from agent.adapters.docs_tfidf import TfidfDocs
 from agent.adapters.llm_openai import OpenAIAdapter
-from agent.adapters.memory_null import NullMemory
+from agent.adapters.memory_sqlite import SqliteMemory
 from agent.adapters.metrics_prometheus import PrometheusMetrics
 from agent.graph import MAX_STEPS, build_graph, initial_state
 
@@ -47,8 +47,13 @@ def main() -> None:
     # -- it is still the default in every test (rule 5), which is what keeps
     # `pytest` free while this file spends.
     llm = OpenAIAdapter()  # was MockLLM()
-    docs = NullDocs()  # Stage 4: docs_tfidf.py
-    memory = NullMemory()  # Stage 4: memory_sqlite.py
+    # THE STAGE 4 SWAP (second half). The model can now read the runbook that
+    # forbids the remediation it kept proposing. Costs ~800 prompt tokens a call.
+    docs = TfidfDocs()  # was NullDocs(); reads runbooks/RB-002-...md
+    # THE STAGE 4 SWAP (first half). Every earlier trace said "0 prior
+    # incidents" because NullMemory died with the process. From here the count
+    # is real, and the prompt carries it.
+    memory = SqliteMemory()  # was NullMemory(); writes ./lab_agent.db
 
     graph = build_graph(metrics, llm, docs, memory)
 

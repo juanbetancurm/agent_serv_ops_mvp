@@ -84,7 +84,12 @@ def build_prompt(state: AgentState) -> str:
         f"INCIDENT {incident.kind} on {incident.container}: {incident.summary}\n"
         f"Evidence: {incident.evidence}\n"
         f"Prior {incident.kind} incidents on this container in the last 24h: {state['prior_incidents']}\n\n"
-        f"Runbook excerpts:\n{runbook}\n\n"
+        # Asking for the citation is asking for PROVENANCE: which paragraph did
+        # this conclusion come from? Without it a diagnosis and a guess look
+        # identical. Each chunk already carries its [file] tag, so the model has
+        # something real to name -- and mvp_plan.md's "done when" for this stage
+        # is a diagnosis that cites RB-002.
+        f"Runbook excerpts (cite the [file] tag of any section you rely on):\n{runbook}\n\n"
         # The prompt DESCRIBES the tools; registry.py ENFORCES them. Listing a
         # tool here grants nothing -- the same lesson as ALLOWED_TOOLS in
         # 01_practice/llm_reasoner.py.
@@ -160,7 +165,16 @@ def build_graph(metrics: MetricsPort, llm: LLMPort, docs: DocsPort, memory: Memo
             for i in memory.recent_incidents(incident.kind, hours=24)
             if i.get("container") == incident.container
         ]
-        chunks = docs.search(incident.summary, k=3)
+        # k=4, not 3, and the number was measured rather than guessed. Ranked
+        # against this incident's summary, RB-002 comes back as:
+        #   1 Reproduce safely  2 Confirm  3 Remediation  4 DO NOT
+        # At k=3 the DO NOT list -- the one section that contradicts the
+        # remediation the model kept proposing -- is left out by one place.
+        # Note also what wins first place: the section on how to CREATE this
+        # incident, which is useless when diagnosing one. That is corpus noise,
+        # and it is the Stage 4 lesson in miniature: the retriever is fine, the
+        # corpus is what decides quality.
+        chunks = docs.search(incident.summary, k=4)
         line = (
             f"RECALL   {len(prior)} prior {incident.kind} incident(s) on "
             f"{incident.container} in 24h | {len(chunks)} runbook chunk(s)"
