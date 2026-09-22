@@ -35,13 +35,15 @@ import inspect
 import json
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 from pydantic import ValidationError
 
+from agent import audit
 from agent.detectors import detect
 from agent.models import AgentDecision
 from agent.ports import DocsPort, LLMPort, MemoryPort, MetricsPort
 from agent.state import AgentState
-from agent.tools.registry import REGISTRY, ToolNotAllowed, dispatch
+from agent.tools.registry import REGISTRY, ToolNotAllowed, check, dispatch
 
 # The hard bound on tool calls per run. 01_practice had the same idea as
 # `if step > MAX_STEPS: break`; here it is a condition on an edge, checked in
@@ -144,8 +146,20 @@ def route(state: AgentState) -> str:
     return "record"
 
 
-def build_graph(metrics: MetricsPort, llm: LLMPort, docs: DocsPort, memory: MemoryPort):
-    """Wire the five nodes to the four ports and compile the graph."""
+def build_graph(
+    metrics: MetricsPort,
+    llm: LLMPort,
+    docs: DocsPort,
+    memory: MemoryPort,
+    checkpointer=None,
+):
+    """Wire the five nodes to the four ports and compile the graph.
+
+    checkpointer is what makes the human gate possible: interrupt() has to save
+    the state somewhere before it stops, or "pause" would just mean "lose the
+    run". None is fine for a graph that never writes -- reads are not gated --
+    and act_node raises a clear error if a write is attempted without one.
+    """
 
     def detect_node(state: AgentState) -> dict:
         stats = metrics.container_stats(state["container"])
@@ -220,18 +234,124 @@ def build_graph(metrics: MetricsPort, llm: LLMPort, docs: DocsPort, memory: Memo
 
     def act_node(state: AgentState) -> dict:
         decision = state["decision"]
+
+        # 1. POLICY FIRST, and check() is pure -- it decides without doing.
+        #    A call the allowlist rejects is refused here, before anybody is
+        #    woken up: nobody should be asked to approve something the code is
+        #    going to refuse anyway.
+        try:
+            spec = check(decision.tool, decision.args)
+        except ToolNotAllowed as refusal:
+            # "The agent tried to restart postgres and was stopped" is exactly
+            # the line a security review wants, and Docker cannot record it:
+            # nothing happened, so nothing happened to be logged anywhere else.
+            audit.write(
+                {
+                    "event": "refused",
+                    "container": state["container"],
+                    "tool": decision.tool,
+                    "args": decision.args,
+                    "reason": str(refusal),
+                    "refused_by": "allowlist",
+                }
+            )
+            return {
+                "steps": state["steps"] + 1,
+                "history": [f"ACT      {decision.tool} -> REFUSED: {refusal}"],
+            }
+
+        # 2. THE HUMAN GATE -- writes only. Reads flow straight through, because
+        #    an agent that asks permission to LOOK at something is useless.
+        #
+        #    interrupt() saves the state and stops the graph. The run is resumed
+        #    later with Command(resume=...), and when it is, THIS NODE RUNS
+        #    AGAIN FROM THE TOP: interrupt() then returns the resume value
+        #    instead of pausing. So everything above this line must be free of
+        #    side effects -- which is why check() is pure and the audit write is
+        #    below it, not above.
+        approval = "not required"
+        if spec.get("write"):
+            approval = interrupt(
+                {
+                    "question": "Approve this write? Resume with 'approve' or 'deny'.",
+                    "container": state["container"],
+                    "tool": decision.tool,
+                    "args": decision.args,
+                    "confidence": decision.confidence,
+                    # The human deciding needs the model's own reasoning, not
+                    # just the command. This is the whole point of the pause.
+                    "reasoning": decision.reasoning,
+                }
+            )
+
+        # 3. RULE 4: the record goes down BEFORE the attempt. If dispatch hangs,
+        #    raises something we do not catch, or takes the machine down with it,
+        #    the file still says what was about to happen, why, and who allowed
+        #    it. Reads are audited too: "what did it look at" is worth answering.
+        audit.write(
+            {
+                "event": "attempting",
+                "container": state["container"],
+                "tool": decision.tool,
+                "args": decision.args,
+                "write": bool(spec.get("write")),
+                "approval": approval,
+                "confidence": decision.confidence,
+                # The model's own words -- the field that answers "why on earth
+                # did it do that", months later, when nobody remembers.
+                "reasoning": decision.reasoning,
+                "step": state["steps"],
+            }
+        )
+
+        if spec.get("write") and approval != "approve":
+            # A denial is a decision, and decisions belong in the trail. Note
+            # what is NOT here: any call to the tool.
+            audit.write(
+                {
+                    "event": "denied",
+                    "container": state["container"],
+                    "tool": decision.tool,
+                    "args": decision.args,
+                    "answer": approval,
+                    "refused_by": "human",
+                }
+            )
+            observation = f"DENIED by a human ({approval}): {decision.tool} was not run"
+            return {
+                "steps": state["steps"] + 1,
+                "history": [f"ACT      {decision.tool} -> {observation}"],
+            }
+
         try:
             observation = dispatch(decision.tool, decision.args)
         except ToolNotAllowed as refusal:
-            # A refusal is not a crash. The message becomes an observation, so
-            # the model reads WHY it was refused and can propose something else.
-            # 01_practice had the same instinct: run_tool RETURNED
-            # {"ok": False, "error": ...} rather than raising into the loop.
+            # Belt and braces. dispatch() checks again, and a pause can last
+            # long enough for the allowlist to have changed underneath it.
             observation = f"REFUSED: {refusal}"
+            audit.write(
+                {
+                    "event": "refused",
+                    "container": state["container"],
+                    "tool": decision.tool,
+                    "args": decision.args,
+                    "reason": str(refusal),
+                    "refused_by": "allowlist",
+                }
+            )
+        else:
+            audit.write(
+                {
+                    "event": "completed",
+                    "container": state["container"],
+                    "tool": decision.tool,
+                    "observation": observation,
+                }
+            )
         return {
-            # Incremented even when the call was refused, on purpose: a model
-            # that keeps asking for a forbidden tool must still run out of
-            # steps, or one refusal becomes an infinite loop.
+            # Incremented even when the call was refused or denied, on purpose:
+            # a model that keeps asking for a forbidden tool must still run out
+            # of steps, or one refusal becomes an infinite loop.
             "steps": state["steps"] + 1,
             # The observation goes into history, and history goes into the next
             # prompt. That is the whole feedback loop, in one line.
@@ -283,4 +403,4 @@ def build_graph(metrics: MetricsPort, llm: LLMPort, docs: DocsPort, memory: Memo
     builder.add_edge("act", "reason")  # the loop: 01's `continue`, as an edge
     builder.add_edge("record", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

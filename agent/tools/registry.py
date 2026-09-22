@@ -71,17 +71,16 @@ class ToolCallInvalid(ToolNotAllowed):
     """
 
 
-def dispatch(tool: str, args: dict) -> str:
-    """Run the named tool, if policy allows it, and return its observation.
+def check(tool: str, args: dict) -> dict:
+    """Decide whether this call is permitted, and return its policy entry.
 
-    Two checks run before any tool code does:
-      1. is this tool on the allowlist at all?
-      2. if it writes, does its target start with the required prefix?
+    PURE: it answers the question without doing anything. That is what lets the
+    graph ask "would this be allowed?" before waking a human to approve it --
+    nobody should be asked to authorise a call the code will reject anyway --
+    and it is why re-running this after a resumed pause is harmless.
 
-    That order matters for more than tidiness. Because both checks come before
-    REGISTRY[tool](**args), a refused call never executes tool code -- so these
-    refusals stay free and offline even in Stage 5, when restart_container
-    really restarts a container.
+    Raises ToolNotAllowed for a tool that is not listed or a write aimed outside
+    lab-*, and ToolCallInvalid for arguments that do not fit the signature.
     """
     spec = ALLOWED.get(tool)
     if spec is None:
@@ -111,4 +110,23 @@ def dispatch(tool: str, args: dict) -> str:
         accepted = ", ".join(inspect.signature(function).parameters)
         raise ToolCallInvalid(f"{tool} takes ({accepted}) -- {mismatch}") from mismatch
 
-    return function(**args)
+    return spec
+
+
+def dispatch(tool: str, args: dict) -> str:
+    """Run the named tool, if policy allows it, and return its observation.
+
+    Two checks run before any tool code does:
+      1. is this tool on the allowlist at all?
+      2. if it writes, does its target start with the required prefix?
+
+    That order matters for more than tidiness. Because both checks come before
+    REGISTRY[tool](**args), a refused call never executes tool code -- so these
+    refusals stay free and offline even in Stage 5, when restart_container
+    really restarts a container.
+    """
+    # The same check() the graph already ran before pausing for approval. Run
+    # again here on purpose: dispatch must be safe to call on its own, and a
+    # policy that is only enforced by the caller is not enforced at all.
+    check(tool, args)
+    return REGISTRY[tool](**args)

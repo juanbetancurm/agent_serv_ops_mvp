@@ -13,3 +13,4 @@ prometheus-client>=0.20  # Stage 2: the exporter's Gauge and HTTP server
 httpx>=0.27             # Stage 2: the HTTP client the Prometheus adapter queries with
 python-dotenv>=1.0      # Stage 3: loads .env so keys never live in source
 scikit-learn>=1.5       # Stage 4: TF-IDF retrieval over the runbooks (no embeddings)
+langgraph-checkpoint-sqlite>=2.0  # Stage 5: a paused run survives the process

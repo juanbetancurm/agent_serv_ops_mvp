@@ -18,6 +18,7 @@ how:  an autouse fixture plus monkeypatch.setitem on REGISTRY, undone after each
 
 import pytest
 
+from agent import audit
 from agent.tools import container_fake
 from agent.tools.registry import REGISTRY
 
@@ -33,3 +34,19 @@ def fake_tools(monkeypatch):
     """Point every tool name at its fake, for the duration of one test."""
     for name, function in FAKE_TOOLS.items():
         monkeypatch.setitem(REGISTRY, name, function)
+
+
+@pytest.fixture(autouse=True)
+def audit_to_tmp(tmp_path, monkeypatch):
+    """Send every test's audit trail to its own temporary file.
+
+    Without this, running pytest would append to the real audit.jsonl -- the
+    file that is supposed to be evidence of what the agent actually did. A test
+    suite forging entries into it would make it worthless.
+
+    Returns the path, so a test that wants to read what was audited can ask for
+    this fixture by name.
+    """
+    path = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(audit, "DEFAULT_PATH", str(path))
+    return str(path)

@@ -84,7 +84,7 @@ be caught), which is why RB-002 sends you to `dmesg` instead.
 ```powershell
 & $Py -m pytest tests/ -q
 ```
-Proves: 98 tests pass with no network, no API key and no containers. `MockLLM`
+Proves: 127 tests pass with no network, no API key and no containers. `MockLLM`
 is the default in every one of them.
 
 ```powershell
@@ -165,6 +165,47 @@ call instead of a whole run.
 
 ---
 
+## 7b. The human gate and the audit trail — free
+
+```powershell
+& $Py -m agent.gate_demo
+```
+Proves: the same write approved once and denied once, in one process, with the
+trail each answer leaves. No Docker, no model.
+
+```powershell
+& $Py -m agent.run --rehearse
+```
+Proves: a run that stops at the gate and **exits**. The request is printed; the
+paused run is in `lab_checkpoints.db`. `--rehearse` scripts the MODEL only —
+everything else is real — because since Stage 4 the real model usually declines
+to restart, which is correct and makes the gate impossible to demo on demand.
+
+```powershell
+& $Py -m agent.run --rehearse
+```
+Proves: run it again and it refuses — one investigation per container at a time.
+This process learned that from the file, not from the one that paused.
+
+```powershell
+& $Py -m agent.run --deny --rehearse
+```
+Proves: the denial reaches the model as an observation, and lands in the trail.
+Nothing was executed.
+
+```powershell
+& $Py -m agent.run --approve --rehearse
+```
+Proves: the approval runs the tool — this really restarts `lab-victim`. Check
+`RestartCount` before and after; a manual restart resets it to 0.
+
+```powershell
+& $Py -c "from agent import audit; [print(r['ts'][11:19], r['event'], r.get('approval') or r.get('answer') or '') for r in audit.read_all()[-8:]]"
+```
+Proves: one denial and one approval, both on disk, with who answered.
+
+---
+
 ## 8. Shut down
 
 ```powershell
@@ -190,4 +231,6 @@ Remove-Item lab_agent.db
 | `LLMUnavailable: ... 401/403` | credentials | check `.env`; the course gateway returns 403 at Cloudflare Access |
 | `LLMUnavailable: ... 400 temperature` | the model rejects non-default temperature | leave `LLM_TEMPERATURE` unset |
 | target `health=down`, connection refused | nothing is listening on 9101 | restart the exporter |
+| `A run on 'lab-victim' is already paused` | a gate is waiting for an answer | `--approve` or `--deny` it |
+| `Nothing is waiting for an answer` | no paused run on that thread | start one: `python -m agent.run` |
 | headings print as `Confirm ? read-only` | Python's stdout is on the Windows ANSI codepage | `$env:PYTHONIOENCODING = "utf-8"` |
